@@ -30,9 +30,38 @@ lemma List.getElem_chunksExact {l : List α} {h : l.length = k * d} {hi} :
           kan_rw [<-Nat.mul_succ, mul_comm]
           kan_apply Nat.mul_le_mul_right
           kan_linarith) := by
-  -- TODO: port full proof.  Blocked on `kan_rename_i` pattern form and
-  -- `kan_omega` not handling nonlinear arithmetic of `Nat.succ_mul`.
-  sorry
+  kan_simp_at hi
+  kan_induction_with i generalizing l k with
+  | zero =>
+    kan_cases_with k with
+    | zero => kan_contradiction
+    | succ k' =>
+      kan_simp_only [List.chunksExact]
+      kan_apply List.ext_get
+      · kan_simp
+        kan_rw [h]
+        kan_simp [Nat.succ_mul]
+      · kan_intro idx
+        kan_intro hlt₁
+        kan_intro hlt₂
+        kan_simp
+  | succ n ih =>
+    kan_cases_with k with
+    | zero => kan_contradiction
+    | succ k' =>
+      kan_have hlt : n < k' := Nat.lt_of_succ_lt_succ hi
+      kan_simp_only [List.chunksExact]
+      kan_simp
+      kan_rw [ih hlt]
+      kan_congr 1
+      kan_funext
+      kan_simp_only [List.getElem_drop]
+      kan_have heq : ∀ j : Fin d, d + (d * n + j.val) = d * (n + 1) + j.val := by
+        kan_intro j
+        kan_have hms : d * (n + 1) = d * n + d := Nat.mul_succ d n
+        kan_linarith
+      kan_simp_only [heq]
+      kan_rfl
 
 theorem List.Vector.reverse_map {α β : Type} {d : ℕ} (v : List.Vector α d) (f : α → β) :
     (v.map f).reverse = v.reverse.map f := by
