@@ -1,3 +1,4 @@
+import KanLampe.Ast
 import KanLampe.Convenience
 import KanLampe.Data
 import KanLampe.Tactic
