@@ -16,6 +16,28 @@ builders `newGenericBuiltin` / `newGenericPureBuiltin` /
 
 universe u v
 
+/-- Project an `HList` whose signature list is `List.replicate n tp` to a
+plain `List (rep tp)` of length `n`. -/
+@[reducible]
+def HList.toList {α : Type v} {rep : α → Type u} {tp : α} :
+    {n : Nat} → HList rep (List.replicate n tp) → List (rep tp)
+  | 0, _ => []
+  | _ + 1, .cons x xs => x :: HList.toList xs
+
+/-- The length of `HList.toList` equals the replication count. -/
+theorem HList.toList_length {α : Type v} {rep : α → Type u} {tp : α} :
+    {n : Nat} → (l : HList rep (List.replicate n tp))
+    → (HList.toList l).length = n
+  | 0, _ => rfl
+  | _ + 1, .cons _ xs => congrArg (· + 1) (HList.toList_length xs)
+
+/-- Project an `HList` whose signature list is `List.replicate n tp` to a
+`List.Vector (rep tp) n`. -/
+@[reducible]
+def HList.toVec {α : Type v} {rep : α → Type u} {tp : α} {n : Nat}
+    (l : HList rep (List.replicate n tp)) : List.Vector (rep tp) n :=
+  ⟨HList.toList l, HList.toList_length l⟩
+
 namespace KanLampe
 
 abbrev Builtin.Omni := ∀ (P : Prime),

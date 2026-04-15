@@ -8,7 +8,7 @@ namespace KanLampe
 
 universe u v
 
-variable {α β : Type _}
+variable {α : Type _} {β : Sort _}
 
 def SLP (α : Type _) [LawfulHeap α] := α → Prop
 
