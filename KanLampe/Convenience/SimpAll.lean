@@ -80,9 +80,7 @@ def addExtra (st : SimpTheorems) (n : Name) : MetaM SimpTheorems := do
 def mkKanSimpAllCtx (extraNames : Array Name) : MetaM Simp.Context := do
   let defaultSet ← getSimpTheorems
   let kanSet ← kanSimpExt.getTheorems
-  let mut withExtras := defaultSet
-  for n in extraNames do
-    withExtras ← addExtra withExtras n
+  let withExtras ← extraNames.foldlM (init := defaultSet) addExtra
   let congr ← getSimpCongrTheorems
   Simp.mkContext (simpTheorems := #[withExtras, kanSet]) (congrTheorems := congr)
 
@@ -120,7 +118,7 @@ elab "kan_simp_all" : tactic => do
     (rewrites, configs, `← h`, etc.) is not supported. -/
 elab "kan_simp_all " "[" lemmas:term,* "]" : tactic => do
   let mvarId ← getMainGoal
-  let mut names : Array Name := #[]
-  for stx in lemmas.getElems do
-    names := (← KanLampe.SimpAll.syntaxToConst stx).elim names names.push
+  let names ← lemmas.getElems.foldlM (init := (#[] : Array Name)) fun acc stx => do
+    let resolved ← KanLampe.SimpAll.syntaxToConst stx
+    pure (resolved.elim acc acc.push)
   KanLampe.SimpAll.runKanSimpAll mvarId names

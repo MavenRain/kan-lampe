@@ -52,7 +52,7 @@ No new `KanExtensionKind` is introduced.
    the majority of `kan_linarith` uses in the kan-lampe port.
 
 2. **Assumption lifting**: for each local hypothesis `h`, try
-   `exact h`, `exact Nat.le_of_lt h`, `exact Nat.succ_le_of_lt h`, …
+   `exact h`, `exact Nat.le_of_lt h`, `exact Nat.succ_le_of_lt h`, ...
 
 3. **Monotonicity patterns**: apply common two-step lemmas such as
    `Nat.lt_trans`, `Nat.lt_of_le_of_lt`, `Nat.add_le_add_left`,
@@ -88,10 +88,8 @@ def natRingLemmaNames : List Name :=
 /-- Build a `Simp.Context` populated with the Nat ring lemmas. -/
 def mkNatRingCtx : MetaM Simp.Context := do
   let env ← getEnv
-  let mut st : SimpTheorems := {}
-  for n in natRingLemmaNames do
-    if env.contains n then
-      st ← st.addConst n
+  let st ← natRingLemmaNames.foldlM (init := ({} : SimpTheorems)) fun st n =>
+    if env.contains n then st.addConst n else pure st
   let congr ← getSimpCongrTheorems
   let ctx ← Simp.mkContext (simpTheorems := #[st]) (congrTheorems := congr)
   pure (ctx.setFailIfUnchanged false)
@@ -131,11 +129,10 @@ def setCoeff (le : LinExpr) (a : Expr) (c : Int) : LinExpr :=
   else
     { le with coeffs := le.coeffs.push (a, c) }
 
-def add (a b : LinExpr) : LinExpr := Id.run do
-  let mut out := a
-  for (x, c) in b.coeffs do
-    out := out.setCoeff x (out.coeff x + c)
-  pure { out with const := a.const + b.const }
+def add (a b : LinExpr) : LinExpr :=
+  let merged := b.coeffs.foldl (init := a) fun acc (x, c) =>
+    acc.setCoeff x (acc.coeff x + c)
+  { merged with const := a.const + b.const }
 
 def neg (a : LinExpr) : LinExpr :=
   { coeffs := a.coeffs.map fun (x, c) => (x, -c),
@@ -226,8 +223,8 @@ structure ScaledHyp where
   deriving Inhabited
 
 /-- Bounded integer-coefficient search for `Σ λᵢ · deltaᵢ = goalDelta`.
-    For `le`/`lt` hypotheses, `λᵢ ∈ {0, …, B}`.  For `eq` hypotheses,
-    `λᵢ ∈ {-B, …, B}`.  `B = 3` suffices for the kan-lampe fragment. -/
+    For `le`/`lt` hypotheses, `λᵢ ∈ {0, ..., B}`.  For `eq` hypotheses,
+    `λᵢ ∈ {-B, ..., B}`.  `B = 3` suffices for the kan-lampe fragment. -/
 partial def findFarkasCertificate
     (hyps : Array (FVarId × Ineq)) (goalDelta : LinExpr)
     (bound : Int := 3) : Option (Array ScaledHyp) :=
@@ -317,10 +314,7 @@ def tryApplyTerm (mvarId : MVarId) (e : Expr) : MetaM (Option (List MVarId)) := 
   let s ← saveState
   try
     let gs ← mvarId.apply e (cfg := { newGoals := .nonDependentOnly })
-    let mut filtered : List MVarId := []
-    for g in gs do
-      unless ← g.isAssigned do
-        filtered := filtered ++ [g]
+    let filtered ← gs.filterM (fun g => do pure !(← g.isAssigned))
     pure (some filtered)
   catch _ =>
     restoreState s
@@ -339,81 +333,67 @@ def tryRewriteBy (mvarId : MVarId) (heq : Expr) (symm : Bool) : MetaM (Option MV
     restoreState s
     pure none
 
+/-- Short-circuit disjunction over Prop-typed local declarations:
+    returns `true` as soon as `f` succeeds on one. -/
+def anyPropHyp (lctx : LocalContext) (f : LocalDecl → MetaM Bool) : MetaM Bool :=
+  lctx.foldlM (init := (false : Bool)) fun found ldecl =>
+    if found then pure true
+    else do
+      if ldecl.isImplementationDetail then return false
+      if !(← isProp ldecl.type) then return false
+      f ldecl
+
+mutual
+/-- Try rewriting by `heq` in both directions, then recursively
+    close via `tryClose`.  Restores state on failure. -/
+partial def tryRewriteByBoth (mvarId : MVarId) (heq : Expr) (depth : Nat) : MetaM Bool := do
+  let fwd ← do
+    let s ← saveState
+    (← tryRewriteBy mvarId heq false).elim (pure false) fun g => do
+      if ← tryClose g (depth - 1) then pure true
+      else do restoreState s; pure false
+  if fwd then return true
+  let s ← saveState
+  (← tryRewriteBy mvarId heq true).elim (pure false) fun g => do
+    if ← tryClose g (depth - 1) then pure true
+    else do restoreState s; pure false
+
 /-- Recursively close the goal by trying each strategy in order.  The
     `depth` parameter bounds the monotonicity-lemma search tree. -/
 partial def tryClose (mvarId : MVarId) (depth : Nat) : MetaM Bool := do
   if ← tryRfl mvarId then return true
   if ← tryRingRfl mvarId then return true
-  -- Direct assumption: try each Prop-typed local hypothesis via `tryExact`.
-  let byAssumption ← mvarId.withContext do
-    let lctx ← getLCtx
-    let mut result := false
-    for ldecl in lctx do
-      if ldecl.isImplementationDetail then continue
-      if !(← isProp ldecl.type) then continue
-      if ← tryExact mvarId ldecl.toExpr then
-        result := true
-        break
-    pure result
+  let byAssumption : Bool ← mvarId.withContext do
+    anyPropHyp (← getLCtx) fun ldecl => tryExact mvarId ldecl.toExpr
   if byAssumption then return true
   if depth == 0 then return false
-  -- Rewrite by each local equality hypothesis, then retry.  Both
-  -- directions are tried; the first one producing a closed goal wins.
-  let rewroteClosed ← mvarId.withContext do
-    let lctx ← getLCtx
-    let mut done := false
-    for ldecl in lctx do
-      if done then break
-      if ldecl.isImplementationDetail then continue
-      if !(← isProp ldecl.type) then continue
-      unless ldecl.type.isAppOfArity ``Eq 3 do continue
-      for symm in #[false, true] do
-        if done then break
-        let s ← saveState
-        let rewResult ← tryRewriteBy mvarId ldecl.toExpr symm
-        let closedByRewrite ← rewResult.elim
-          (pure false)
-          (fun g => do
-            if ← tryClose g (depth - 1) then
-              pure true
-            else
-              restoreState s
-              pure false)
-        if closedByRewrite then done := true
-    pure done
+  let rewroteClosed : Bool ← mvarId.withContext do
+    anyPropHyp (← getLCtx) fun ldecl => do
+      if !ldecl.type.isAppOfArity ``Eq 3 then return false
+      tryRewriteByBoth mvarId ldecl.toExpr depth
   if rewroteClosed then return true
-  -- Battery of monotonicity lemmas.  Each lemma is applied atomically:
-  -- if the apply succeeds but recursive closing of subgoals fails, we
-  -- fully restore state so no partial assignments leak into the parent.
-  for lemmaName in monoLemmaNames do
+  monoLemmaNames.foldlM (init := (false : Bool)) fun found lemmaName => do
+    if found then return true
     let s ← saveState
     let c ← mkConstWithFreshMVarLevels lemmaName
-    let applyResult ← tryApplyTerm mvarId c
-    let closedByLemma ← applyResult.elim
+    let closedByLemma ← (← tryApplyTerm mvarId c).elim
       (pure false)
-      (fun gs => do
-        let mut ok := true
-        for g in gs do
-          unless ← tryClose g (depth - 1) do
-            ok := false
-            break
-        pure ok)
+      (fun gs => gs.foldlM (init := (true : Bool)) fun ok g =>
+        if ok then tryClose g (depth - 1) else pure false)
     if closedByLemma then return true
     restoreState s
-  pure false
+    pure false
+end
 
 /-! ## Stage 4: Farkas proof reconstruction -/
 
 /-- Collect local hypotheses that parse as `Ineq`. -/
 def collectHyps (mvarId : MVarId) : MetaM (Array (FVarId × Ineq)) := do
   mvarId.withContext do
-    let mut out : Array (FVarId × Ineq) := #[]
-    let lctx ← getLCtx
-    for ldecl in lctx do
-      if ldecl.isImplementationDetail then continue
-      out := (← toIneq ldecl.type).elim out fun ineq =>
-        out.push (ldecl.fvarId, ineq)
-    pure out
+    (← getLCtx).foldlM (init := #[]) fun acc ldecl => do
+      if ldecl.isImplementationDetail then return acc
+      (← toIneq ldecl.type).elim (pure acc) fun ineq =>
+        pure (acc.push (ldecl.fvarId, ineq))
 
 /-- Reconstruct the proof from a Farkas certificate with a single
     hypothesis of matching relation and coefficient 1.  This handles
@@ -460,13 +440,12 @@ elab "kan_linarith" : tactic => do
 elab "kan_linarith " "[" lemmas:term,* "]" : tactic => do
   let mvarId ← getMainGoal
   mvarId.withContext do
-    let mut g := mvarId
-    for stx in lemmas.getElems do
+    let g ← lemmas.getElems.foldlM (init := mvarId) fun g stx => do
       let e ← Lean.Elab.Term.elabTerm stx none
       let ty ← inferType e
       let gAsserted ← g.assert `hlin ty e
       let (_, gIntro) ← gAsserted.intro1P
-      g := gIntro
+      pure gIntro
     kanLinarithCore g
 
 end KanLampe.Linarith
