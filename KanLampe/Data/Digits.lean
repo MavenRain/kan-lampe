@@ -299,7 +299,7 @@ theorem ofDigitsBE_toDigitsBE {r : Radix} {n : RadixVec r d} :
     | mk r hr =>
       kan_cases_with n with
       | mk n hn =>
-        kan_have hzero : n = 0 := by kan_simp_all
+        kan_have hzero : n = 0 := Nat.lt_one_iff.mp hn
         kan_simp [toDigitsBE, ofDigitsBE, ofLimbsBE, hzero]
   | succ d ih =>
     kan_conv_rhs rw [msd_lsds_decomposition (v := n)]
